@@ -58,7 +58,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
-import { createDefaultSliceMap, textToSliceMap } from '../utils/sliceProcessor'
+import { createDefaultSliceMap, textToSliceMap, testSegmentMatching, matchSegments, validateMorphingSegments } from '../utils/sliceProcessor'
 import type { SliceMap, SliceSegment } from '../types/slice'
 
 console.log('MorphoText-simple.vue: スクリプト実行開始')
@@ -93,6 +93,20 @@ console.log('MorphoText-simple.vue: 変数定義完了')
 onMounted(() => {
   console.log('MorphoText-simple.vue: onMounted実行')
   initializeDefaultState()
+  
+  // セグメントマッチングのテストを実行
+  console.log('セグメントマッチングテストを実行中...')
+  testSegmentMatching()
+  
+  // デバッグ用のグローバル関数を設定
+  ;(window as any).runSegmentTest = testSegmentMatching
+  ;(window as any).runVisualTest = runVisualTest
+  console.log('🔧 デバッグ用コマンド:')
+  console.log('- window.runSegmentTest() でセグメントテストを再実行')
+  console.log('- window.runVisualTest() でビジュアルテストを実行（小さな円の動作確認）')
+  console.log('')
+  console.log('📋 新機能: セグメントが存在しない場所では中央に小さな円(高さ0.03)が表示されます')
+  console.log('💡 テストのヒント: 空の文字列を入力すると全てのセグメントが小さな円に収束します')
 })
 
 // デフォルト状態の初期化
@@ -154,15 +168,30 @@ async function handleTextSubmit() {
   
   try {
     console.log('テキストをスライスマップに変換開始')
+    const startTime = performance.now()
     targetSliceMap.value = await textToSliceMap(text, config.sliceCount)
-    console.log('テキストをスライスマップに変換完了', targetSliceMap.value)
+    const conversionTime = performance.now() - startTime
+    console.log(`テキスト変換完了 (${conversionTime.toFixed(2)}ms)`, targetSliceMap.value)
+    
+    // セグメント数の統計を表示
+    const segmentCounts = targetSliceMap.value.map(slice => slice.length)
+    const totalSegments = segmentCounts.reduce((sum, count) => sum + count, 0)
+    console.log(`セグメント統計: 総数=${totalSegments}, 平均=${(totalSegments / config.sliceCount).toFixed(1)}, 範囲=[${Math.min(...segmentCounts)}-${Math.max(...segmentCounts)}]`)
     
     // ゆっくりとしたアニメーションでモーフィング
+    const animationStartTime = performance.now()
     await animateToTarget(targetSliceMap.value)
-    console.log('アニメーション完了')
+    const animationTime = performance.now() - animationStartTime
+    console.log(`アニメーション完了 (${animationTime.toFixed(2)}ms)`)
     
   } catch (error) {
     console.error('モーフィングエラー:', error)
+    console.error('エラー詳細:', {
+      text,
+      sliceCount: config.sliceCount,
+      currentSliceMapLength: currentSliceMap.value.length,
+      targetSliceMapLength: targetSliceMap.value.length
+    })
   } finally {
     isAnimating.value = false
   }
@@ -175,6 +204,23 @@ function animateToTarget(target: SliceMap): Promise<void> {
     const duration = 1000 // 1秒間のアニメーション
     const startSliceMap = JSON.parse(JSON.stringify(currentSliceMap.value))
     
+    // 新しいマッチングアルゴリズムを使用してセグメントペアを作成
+    const morphPairs = matchSegments(startSliceMap, target, config.sliceCount)
+    console.log('モーフィングペア生成完了:', {
+      pairCount: morphPairs.length,
+      totalCurrentSegments: morphPairs.reduce((sum, pair) => sum + pair.currentSegments.length, 0),
+      totalTargetSegments: morphPairs.reduce((sum, pair) => sum + pair.targetSegments.length, 0)
+    })
+    
+    // 初期検証
+    const initialValidation = validateMorphingSegments(morphPairs, 0)
+    if (!initialValidation) {
+      console.warn('⚠️ 初期状態で問題が検出されました')
+    }
+    
+    let frameCount = 0
+    let lastValidationTime = 0
+    
     function animate() {
       const elapsed = Date.now() - startTime
       const progress = Math.min(elapsed / duration, 1)
@@ -182,13 +228,31 @@ function animateToTarget(target: SliceMap): Promise<void> {
       // イージング関数（ease-out）
       const easeProgress = 1 - Math.pow(1 - progress, 3)
       
-      // 補間されたスライスマップを計算
-      const interpolatedSliceMap = interpolateSliceMaps(startSliceMap, target, easeProgress)
+      // 定期的にリアルタイム検証を実行（パフォーマンスのため5フレームごと）
+      frameCount++
+      if (frameCount % 5 === 0 && Date.now() - lastValidationTime > 100) {
+        const isValid = validateMorphingSegments(morphPairs, easeProgress)
+        if (!isValid) {
+          console.warn(`⚠️ フレーム${frameCount}でアニメーション問題検出 (progress: ${easeProgress.toFixed(3)})`)
+        }
+        lastValidationTime = Date.now()
+      }
+      
+      // マッチングペアに基づいて補間されたスライスマップを計算
+      const interpolatedSliceMap = interpolateFromMorphPairs(morphPairs, easeProgress)
       currentSliceMap.value = interpolatedSliceMap
       
       if (progress < 1) {
         requestAnimationFrame(animate)
       } else {
+        // 最終検証
+        const finalValidation = validateMorphingSegments(morphPairs, 1)
+        if (!finalValidation) {
+          console.warn('⚠️ 最終状態で問題が検出されました')
+        } else {
+          console.log('✅ アニメーション完了 - 全検証通過')
+        }
+        
         currentSliceMap.value = JSON.parse(JSON.stringify(target))
         resolve()
       }
@@ -198,21 +262,45 @@ function animateToTarget(target: SliceMap): Promise<void> {
   })
 }
 
-// 2つのスライスマップを補間
+// マッチングペアに基づいてスライスマップを補間
+function interpolateFromMorphPairs(morphPairs: any[], progress: number): SliceMap {
+  const result: SliceMap = []
+  
+  for (const pair of morphPairs) {
+    const interpolatedSlice: SliceSegment[] = []
+    
+    // currentSegmentsとtargetSegmentsは同じ長さであることが保証されている
+    for (let i = 0; i < pair.currentSegments.length; i++) {
+      const currentSeg = pair.currentSegments[i]
+      const targetSeg = pair.targetSegments[i]
+      
+      interpolatedSlice.push({
+        top: currentSeg.top + (targetSeg.top - currentSeg.top) * progress,
+        bottom: currentSeg.bottom + (targetSeg.bottom - currentSeg.bottom) * progress
+      })
+    }
+    
+    result.push(interpolatedSlice)
+  }
+  
+  return result
+}
+
+// 2つのスライスマップを補間（後方互換性のため保持）
 function interpolateSliceMaps(start: SliceMap, end: SliceMap, progress: number): SliceMap {
   const result: SliceMap = []
   const maxSlices = Math.max(start.length, end.length)
   
   for (let i = 0; i < maxSlices; i++) {
-    const startSlice = start[i] || [{ top: 0.49, bottom: 0.51 }]
-    const endSlice = end[i] || [{ top: 0.49, bottom: 0.51 }]
+    const startSlice = start[i] || [{ top: 0.485, bottom: 0.515 }] // 小さな円
+    const endSlice = end[i] || [{ top: 0.485, bottom: 0.515 }]     // 小さな円
     
     const interpolatedSlice: SliceSegment[] = []
     const maxSegments = Math.max(startSlice.length, endSlice.length)
     
     for (let j = 0; j < maxSegments; j++) {
-      const startSegment = startSlice[j] || { top: 0.49, bottom: 0.51 }
-      const endSegment = endSlice[j] || { top: 0.49, bottom: 0.51 }
+      const startSegment = startSlice[j] || { top: 0.485, bottom: 0.515 } // 小さな円
+      const endSegment = endSlice[j] || { top: 0.485, bottom: 0.515 }     // 小さな円
       
       interpolatedSlice.push({
         top: startSegment.top + (endSegment.top - startSegment.top) * progress,
@@ -365,6 +453,72 @@ function cleanupDrag() {
   document.removeEventListener('mouseup', handleMouseUp)
   document.removeEventListener('touchmove', handleTouchMove)
   document.removeEventListener('touchend', handleTouchEnd)
+}
+
+// デバッグ用のビジュアルテスト関数
+function runVisualTest() {
+  console.log('🎯 ビジュアルテストを開始します（小さな円の仕様テスト含む）')
+  
+  // テスト1: 複数のセグメントから1つのセグメントへの変化
+  testTransition('複数→単一', 'ABC', 'I')
+  
+  // テスト2: 単一のセグメントから複数のセグメントへの変化
+  setTimeout(() => testTransition('単一→複数', 'I', 'WMW'), 3000)
+  
+  // テスト3: 複雑な変化
+  setTimeout(() => testTransition('複雑変化', 'HELLO', 'WORLD'), 6000)
+  
+  // テスト4: 空の状態への変化（小さな円に収束）
+  setTimeout(() => testTransition('→小さな円', 'TEXT', ''), 9000)
+  
+  // テスト5: 空から文字への変化（小さな円から出現）
+  setTimeout(() => testTransition('小さな円→文字', '', 'NEW'), 12000)
+  
+  // テスト6: 極端なスライス数での変化
+  setTimeout(() => {
+    console.log('🔄 スライス数変更テスト')
+    config.sliceCount = 5
+    testTransition('少ないスライス', '', 'HI')
+  }, 15000)
+  
+  setTimeout(() => {
+    config.sliceCount = 50
+    testTransition('多いスライス', 'HI', 'HELLO')
+  }, 18000)
+  
+  // 元のスライス数に戻す
+  setTimeout(() => {
+    config.sliceCount = 20
+    console.log('✅ ビジュアルテスト完了 - スライス数を20に戻しました')
+  }, 21000)
+}
+
+async function testTransition(testName: string, fromText: string, toText: string) {
+  console.log(`🔄 ${testName}テスト: "${fromText}" → "${toText}"`)
+  
+  try {
+    if (fromText) {
+      const fromSliceMap = await textToSliceMap(fromText, config.sliceCount)
+      currentSliceMap.value = fromSliceMap
+      await new Promise(resolve => setTimeout(resolve, 500)) // 少し待機
+    }
+    
+    if (toText) {
+      const toSliceMap = await textToSliceMap(toText, config.sliceCount)
+      await animateToTarget(toSliceMap)
+    } else {
+      // 空の状態への変化 - 小さな円に収束
+      console.log('空の状態への変化：すべてのセグメントが中央の小さな円に収束します')
+      const smallCircleSliceMap = Array(config.sliceCount).fill(0).map(() => [
+        { top: 0.485, bottom: 0.515 } // 中央の小さな円
+      ])
+      await animateToTarget(smallCircleSliceMap)
+    }
+    
+    console.log(`✅ ${testName}テスト完了`)
+  } catch (error) {
+    console.error(`❌ ${testName}テストエラー:`, error)
+  }
 }
 
 console.log('MorphoText-simple.vue: スクリプト実行完了')
