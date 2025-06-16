@@ -272,7 +272,7 @@ function handleMouseDown(event: MouseEvent) {
   // 長押し検出用タイマー
   holdTimer.value = window.setTimeout(() => {
     enterSliderMode()
-  }, 300) // 300ms後にスライダーモードに切り替え
+  }, 500) // 500ms後にスライダーモードに切り替え
   
   // マウスアップ・マウスムーブイベントを監視
   document.addEventListener('mousemove', handleMouseMove)
@@ -288,7 +288,7 @@ function handleTouchStart(event: TouchEvent) {
   
   holdTimer.value = window.setTimeout(() => {
     enterSliderMode()
-  }, 300)
+  }, 500)
   
   document.addEventListener('touchmove', handleTouchMove)
   document.addEventListener('touchend', handleTouchEnd)

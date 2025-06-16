@@ -132,7 +132,8 @@ function extractSliceMap(imageData: ImageData, canvasWidth: number, canvasHeight
 }
 
 /**
- * セグメントをマッチング
+ * セグメントをマッチング（改良版）
+ * 全てのセグメントが最も近いセグメントにモーフするように改良
  */
 export function matchSegments(currentSliceMap: SliceMap, targetSliceMap: SliceMap, sliceCount: number) {
   const morphPairs = []
@@ -141,14 +142,101 @@ export function matchSegments(currentSliceMap: SliceMap, targetSliceMap: SliceMa
     const currentSegments = currentSliceMap[i] || []
     const targetSegments = targetSliceMap[i] || []
 
+    // 改良されたマッチングロジック
+    const matched = matchSegmentsOptimal(currentSegments, targetSegments)
+
     morphPairs.push({
-      currentSegments,
-      targetSegments,
+      currentSegments: matched.currentSegments,
+      targetSegments: matched.targetSegments,
       sliceIndex: i
     })
   }
 
   return morphPairs
+}
+
+/**
+ * セグメント間の最適なマッチングを計算
+ * すべてのセグメントが無駄にならないよう、最も近いセグメントとペアリング
+ */
+function matchSegmentsOptimal(currentSegments: SliceSegment[], targetSegments: SliceSegment[]) {
+  if (currentSegments.length === 0 && targetSegments.length === 0) {
+    return { currentSegments: [], targetSegments: [] }
+  }
+
+  if (currentSegments.length === 0) {
+    // currentが空の場合、targetの各セグメントに対して中心線から開始
+    const centerSegment = { top: 0.49, bottom: 0.51 }
+    return {
+      currentSegments: targetSegments.map(() => centerSegment),
+      targetSegments: targetSegments
+    }
+  }
+
+  if (targetSegments.length === 0) {
+    // targetが空の場合、currentの各セグメントを中心線に収束
+    const centerSegment = { top: 0.49, bottom: 0.51 }
+    return {
+      currentSegments: currentSegments,
+      targetSegments: currentSegments.map(() => centerSegment)
+    }
+  }
+
+  // 両方にセグメントがある場合の最適マッチング
+  const matchedCurrent: SliceSegment[] = []
+  const matchedTarget: SliceSegment[] = []
+
+  const maxCount = Math.max(currentSegments.length, targetSegments.length)
+
+  for (let i = 0; i < maxCount; i++) {
+    if (i < currentSegments.length && i < targetSegments.length) {
+      // 両方にセグメントがある場合：そのままペアリング
+      matchedCurrent.push(currentSegments[i])
+      matchedTarget.push(targetSegments[i])
+    } else if (i < currentSegments.length) {
+      // currentにのみセグメントがある場合：最も近いtargetを探す
+      const currentSeg = currentSegments[i]
+      const nearestTarget = findNearestSegment(currentSeg, targetSegments)
+      matchedCurrent.push(currentSeg)
+      matchedTarget.push(nearestTarget)
+    } else {
+      // targetにのみセグメントがある場合：最も近いcurrentを探す
+      const targetSeg = targetSegments[i]
+      const nearestCurrent = findNearestSegment(targetSeg, currentSegments)
+      matchedCurrent.push(nearestCurrent)
+      matchedTarget.push(targetSeg)
+    }
+  }
+
+  return {
+    currentSegments: matchedCurrent,
+    targetSegments: matchedTarget
+  }
+}
+
+/**
+ * 指定されたセグメントに最も近いセグメントを見つける
+ */
+function findNearestSegment(targetSegment: SliceSegment, segments: SliceSegment[]): SliceSegment {
+  if (segments.length === 0) {
+    return { top: 0.49, bottom: 0.51 } // デフォルトの中心セグメント
+  }
+
+  const targetCenter = (targetSegment.top + targetSegment.bottom) / 2
+  let nearestSegment = segments[0]
+  let minDistance = Math.abs((segments[0].top + segments[0].bottom) / 2 - targetCenter)
+
+  for (let i = 1; i < segments.length; i++) {
+    const segmentCenter = (segments[i].top + segments[i].bottom) / 2
+    const distance = Math.abs(segmentCenter - targetCenter)
+    
+    if (distance < minDistance) {
+      minDistance = distance
+      nearestSegment = segments[i]
+    }
+  }
+
+  return nearestSegment
 }
 
 /**
