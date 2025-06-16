@@ -157,7 +157,7 @@ export function matchSegments(currentSliceMap: SliceMap, targetSliceMap: SliceMa
 
 /**
  * セグメント間の最適なマッチングを計算
- * すべてのセグメントが無駄にならないよう、最も近いセグメントとペアリング
+ * 全セグメントの中央Y値を計算し、最も近いセグメント同士をマッチング
  */
 function matchSegmentsOptimal(currentSegments: SliceSegment[], targetSegments: SliceSegment[]) {
   if (currentSegments.length === 0 && targetSegments.length === 0) {
@@ -182,29 +182,54 @@ function matchSegmentsOptimal(currentSegments: SliceSegment[], targetSegments: S
     }
   }
 
-  // 両方にセグメントがある場合の最適マッチング
+  // 全セグメントの中央Y値を計算
+  const currentCenters = currentSegments.map(seg => ({
+    segment: seg,
+    center: (seg.top + seg.bottom) / 2,
+    used: false
+  }))
+
+  const targetCenters = targetSegments.map(seg => ({
+    segment: seg,
+    center: (seg.top + seg.bottom) / 2,
+    used: false
+  }))
+
+  // セグメント数の多い方を基準にマッチング
+  const maxCount = Math.max(currentSegments.length, targetSegments.length)
   const matchedCurrent: SliceSegment[] = []
   const matchedTarget: SliceSegment[] = []
 
-  const maxCount = Math.max(currentSegments.length, targetSegments.length)
-
+  // 最適マッチングアルゴリズム
   for (let i = 0; i < maxCount; i++) {
     if (i < currentSegments.length && i < targetSegments.length) {
-      // 両方にセグメントがある場合：そのままペアリング
-      matchedCurrent.push(currentSegments[i])
-      matchedTarget.push(targetSegments[i])
+      // 現在使用可能なセグメントから最も近いペアを見つける
+      const { currentMatch, targetMatch } = findBestMatch(currentCenters, targetCenters)
+      
+      if (currentMatch && targetMatch) {
+        matchedCurrent.push(currentMatch.segment)
+        matchedTarget.push(targetMatch.segment)
+        currentMatch.used = true
+        targetMatch.used = true
+      }
     } else if (i < currentSegments.length) {
-      // currentにのみセグメントがある場合：最も近いtargetを探す
-      const currentSeg = currentSegments[i]
-      const nearestTarget = findNearestSegment(currentSeg, targetSegments)
-      matchedCurrent.push(currentSeg)
-      matchedTarget.push(nearestTarget)
+      // currentにセグメントが余っている場合
+      const unusedCurrent = currentCenters.find(c => !c.used)
+      if (unusedCurrent) {
+        const nearestTarget = findNearestUnusedTarget(unusedCurrent, targetCenters)
+        matchedCurrent.push(unusedCurrent.segment)
+        matchedTarget.push(nearestTarget)
+        unusedCurrent.used = true
+      }
     } else {
-      // targetにのみセグメントがある場合：最も近いcurrentを探す
-      const targetSeg = targetSegments[i]
-      const nearestCurrent = findNearestSegment(targetSeg, currentSegments)
-      matchedCurrent.push(nearestCurrent)
-      matchedTarget.push(targetSeg)
+      // targetにセグメントが余っている場合
+      const unusedTarget = targetCenters.find(t => !t.used)
+      if (unusedTarget) {
+        const nearestCurrent = findNearestUnusedCurrent(unusedTarget, currentCenters)
+        matchedCurrent.push(nearestCurrent)
+        matchedTarget.push(unusedTarget.segment)
+        unusedTarget.used = true
+      }
     }
   }
 
@@ -215,28 +240,102 @@ function matchSegmentsOptimal(currentSegments: SliceSegment[], targetSegments: S
 }
 
 /**
- * 指定されたセグメントに最も近いセグメントを見つける
+ * 使用可能なセグメントから最も近いペアを見つける
  */
-function findNearestSegment(targetSegment: SliceSegment, segments: SliceSegment[]): SliceSegment {
-  if (segments.length === 0) {
-    return { top: 0.49, bottom: 0.51 } // デフォルトの中心セグメント
-  }
+function findBestMatch(currentCenters: Array<{segment: SliceSegment, center: number, used: boolean}>, 
+                      targetCenters: Array<{segment: SliceSegment, center: number, used: boolean}>) {
+  let bestDistance = Infinity
+  let bestCurrentMatch = null
+  let bestTargetMatch = null
 
-  const targetCenter = (targetSegment.top + targetSegment.bottom) / 2
-  let nearestSegment = segments[0]
-  let minDistance = Math.abs((segments[0].top + segments[0].bottom) / 2 - targetCenter)
-
-  for (let i = 1; i < segments.length; i++) {
-    const segmentCenter = (segments[i].top + segments[i].bottom) / 2
-    const distance = Math.abs(segmentCenter - targetCenter)
+  for (const current of currentCenters) {
+    if (current.used) continue
     
-    if (distance < minDistance) {
-      minDistance = distance
-      nearestSegment = segments[i]
+    for (const target of targetCenters) {
+      if (target.used) continue
+      
+      const distance = Math.abs(current.center - target.center)
+      if (distance < bestDistance) {
+        bestDistance = distance
+        bestCurrentMatch = current
+        bestTargetMatch = target
+      }
     }
   }
 
-  return nearestSegment
+  return { currentMatch: bestCurrentMatch, targetMatch: bestTargetMatch }
+}
+
+/**
+ * 使用されていないターゲットセグメントから最も近いものを見つける
+ */
+function findNearestUnusedTarget(currentSeg: {segment: SliceSegment, center: number, used: boolean}, 
+                                targetCenters: Array<{segment: SliceSegment, center: number, used: boolean}>): SliceSegment {
+  const unusedTargets = targetCenters.filter(t => !t.used)
+  
+  if (unusedTargets.length === 0) {
+    // 使用可能なターゲットがない場合は最も近いものを複製
+    let nearestTarget = targetCenters[0]
+    let minDistance = Math.abs(currentSeg.center - targetCenters[0].center)
+    
+    for (const target of targetCenters) {
+      const distance = Math.abs(currentSeg.center - target.center)
+      if (distance < minDistance) {
+        minDistance = distance
+        nearestTarget = target
+      }
+    }
+    return nearestTarget.segment
+  }
+
+  let nearestTarget = unusedTargets[0]
+  let minDistance = Math.abs(currentSeg.center - unusedTargets[0].center)
+
+  for (const target of unusedTargets) {
+    const distance = Math.abs(currentSeg.center - target.center)
+    if (distance < minDistance) {
+      minDistance = distance
+      nearestTarget = target
+    }
+  }
+
+  return nearestTarget.segment
+}
+
+/**
+ * 使用されていないカレントセグメントから最も近いものを見つける
+ */
+function findNearestUnusedCurrent(targetSeg: {segment: SliceSegment, center: number, used: boolean}, 
+                                 currentCenters: Array<{segment: SliceSegment, center: number, used: boolean}>): SliceSegment {
+  const unusedCurrents = currentCenters.filter(c => !c.used)
+  
+  if (unusedCurrents.length === 0) {
+    // 使用可能なカレントがない場合は最も近いものを複製
+    let nearestCurrent = currentCenters[0]
+    let minDistance = Math.abs(targetSeg.center - currentCenters[0].center)
+    
+    for (const current of currentCenters) {
+      const distance = Math.abs(targetSeg.center - current.center)
+      if (distance < minDistance) {
+        minDistance = distance
+        nearestCurrent = current
+      }
+    }
+    return nearestCurrent.segment
+  }
+
+  let nearestCurrent = unusedCurrents[0]
+  let minDistance = Math.abs(targetSeg.center - unusedCurrents[0].center)
+
+  for (const current of unusedCurrents) {
+    const distance = Math.abs(targetSeg.center - current.center)
+    if (distance < minDistance) {
+      minDistance = distance
+      nearestCurrent = current
+    }
+  }
+
+  return nearestCurrent.segment
 }
 
 /**
