@@ -200,7 +200,87 @@ export function createDefaultSliceMap(sliceCount: number): SliceMap {
 }
 
 /**
- * テキストをスライスマップに変換
+ * テキストをスライスマップに変換（フォントサイズとフォント太さ指定可能）
+ */
+export async function textToSliceMapWithSize(text: string, sliceCount: number, fontSize: number, fontWeight: string = 'bold'): Promise<SliceMap> {
+  return new Promise((resolve) => {
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')
+    
+    if (!ctx) {
+      resolve(createDefaultSliceMap(sliceCount))
+      return
+    }
+
+    // Canvasサイズを設定
+    const canvasWidth = sliceCount * 4
+    const canvasHeight = 200
+    
+    canvas.width = canvasWidth
+    canvas.height = canvasHeight
+
+    // 背景を白で塗りつぶし
+    ctx.fillStyle = 'white'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    
+    // テキスト描画設定
+    ctx.fillStyle = 'black'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.font = `${fontWeight} ${fontSize}px Helvetica, Hiragino Kaku Gothic ProN, Arial, sans-serif`
+    
+    // テキストが幅に収まるように調整
+    const textWidth = ctx.measureText(text).width
+    const targetWidth = canvas.width * 0.8
+    
+    let finalFontSize = fontSize
+    if (textWidth > targetWidth) {
+      finalFontSize = Math.round(fontSize * (targetWidth / textWidth))
+      ctx.font = `${fontWeight} ${finalFontSize}px Helvetica, Hiragino Kaku Gothic ProN, Arial, sans-serif`
+    }
+    
+    // 縦方向の中央に配置
+    const textY = canvas.height / 2
+    ctx.fillText(text, canvas.width / 2, textY)
+
+    // デバッグ用：Canvas内容をコンソールに出力
+    console.log(`Text: "${text}", FontSize: ${finalFontSize}, Canvas: ${canvas.width}x${canvas.height}`)
+
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const sliceMap = extractSliceMap(imageData, canvas.width, canvas.height, sliceCount)
+
+    resolve(sliceMap)
+  })
+}
+
+/**
+ * スライスマップの縦座標を中心線基準でスケールする
+ */
+export function scaleSliceMapVertically(sliceMap: SliceMap, scale: number): SliceMap {
+  const centerY = 0.5 // 中心線（0.5）
+  
+  return sliceMap.map(slice => 
+    slice.map(segment => {
+      // 各座標を中心線からの距離でスケール
+      const topDistance = segment.top - centerY
+      const bottomDistance = segment.bottom - centerY
+      
+      const scaledTop = centerY + (topDistance * scale)
+      const scaledBottom = centerY + (bottomDistance * scale)
+      
+      // 0.0 - 1.0の範囲内にクランプ
+      return {
+        top: Math.max(0.0, Math.min(1.0, scaledTop)),
+        bottom: Math.max(0.0, Math.min(1.0, scaledBottom))
+      }
+    })
+    // 無効なセグメント（top >= bottom）を除外
+    .filter(segment => segment.top < segment.bottom)
+  )
+}
+
+/**
+ * テキストをスライスマップに変換（従来版 - 後方互換性のため保持）
  */
 export async function textToSliceMap(text: string, sliceCount: number): Promise<SliceMap> {
   return new Promise((resolve) => {
@@ -571,4 +651,129 @@ export function validateMorphingSegments(morphPairs: any[], progress: number): b
   }
   
   return !hasIssues
+}
+
+/**
+ * マッチングペアに基づいてスライスマップを補間
+ */
+export function interpolateFromMorphPairs(morphPairs: any[], progress: number): SliceMap {
+  const result: SliceMap = []
+  
+  for (const pair of morphPairs) {
+    const interpolatedSlice: SliceSegment[] = []
+    
+    // currentSegmentsとtargetSegmentsは同じ長さであることが保証されている
+    for (let i = 0; i < pair.currentSegments.length; i++) {
+      const currentSeg = pair.currentSegments[i]
+      const targetSeg = pair.targetSegments[i]
+      
+      interpolatedSlice.push({
+        top: currentSeg.top + (targetSeg.top - currentSeg.top) * progress,
+        bottom: currentSeg.bottom + (targetSeg.bottom - currentSeg.bottom) * progress
+      })
+    }
+    
+    result.push(interpolatedSlice)
+  }
+  
+  return result
+}
+
+/**
+ * 2つのSliceMapを補間してアニメーションフレームを生成
+ */
+export function interpolateSliceMaps(startSliceMap: SliceMap, endSliceMap: SliceMap, progress: number): SliceMap {
+  // プログレスを0-1の範囲にクランプ
+  const clampedProgress = Math.max(0, Math.min(1, progress))
+  
+  // 各スライスに対して補間を実行
+  const result: SliceMap = []
+  
+  for (let sliceIndex = 0; sliceIndex < Math.max(startSliceMap.length, endSliceMap.length); sliceIndex++) {
+    const startSlice = startSliceMap[sliceIndex] || []
+    const endSlice = endSliceMap[sliceIndex] || []
+    
+    const interpolatedSlice: SliceSegment[] = []
+    
+    // セグメントの最大数を取得
+    const maxSegments = Math.max(startSlice.length, endSlice.length)
+    
+    for (let segmentIndex = 0; segmentIndex < maxSegments; segmentIndex++) {
+      const startSegment = startSlice[segmentIndex] || { top: 0.5, bottom: 0.5 }
+      const endSegment = endSlice[segmentIndex] || { top: 0.5, bottom: 0.5 }
+      
+      // 線形補間
+      const interpolatedTop = startSegment.top + (endSegment.top - startSegment.top) * clampedProgress
+      const interpolatedBottom = startSegment.bottom + (endSegment.bottom - startSegment.bottom) * clampedProgress
+      
+      interpolatedSlice.push({
+        top: interpolatedTop,
+        bottom: interpolatedBottom
+      })
+    }
+    
+    result.push(interpolatedSlice)
+  }
+  
+  return result
+}
+
+/**
+ * SliceMapからSVGパス文字列を生成
+ */
+export function svgPathFromSliceMap(sliceMap: SliceMap, svgWidth: number, svgHeight: number): string {
+  const paths: string[] = []
+  
+  for (let sliceIndex = 0; sliceIndex < sliceMap.length; sliceIndex++) {
+    const slice = sliceMap[sliceIndex]
+    const sliceX = (sliceIndex / sliceMap.length) * svgWidth
+    const sliceWidth = svgWidth / sliceMap.length
+    
+    for (const segment of slice) {
+      const segmentY = segment.top * svgHeight
+      const segmentHeight = (segment.bottom - segment.top) * svgHeight
+      
+      if (segmentHeight > 0) {
+        // カプセル形状のパスを生成
+        const radius = Math.min(sliceWidth / 2, segmentHeight / 2)
+        const path = createRoundedRectPath(sliceX, segmentY, sliceWidth, segmentHeight, radius)
+        paths.push(path)
+      }
+    }
+  }
+  
+  // SVG文字列を構築
+  const svgContent = paths.map(path => `    <path d="${path}" class="slice-segment" />`).join('\n')
+  
+  return `<svg width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}" xmlns="http://www.w3.org/2000/svg">
+${svgContent}
+</svg>`
+}
+
+/**
+ * カプセル形状のSVGパスを生成
+ */
+function createRoundedRectPath(x: number, y: number, width: number, height: number, radius: number): string {
+  const spacing = Math.max(1, width * 0.05)
+  const adjustedX = x + spacing / 2
+  const adjustedWidth = width - spacing
+  
+  if (adjustedWidth <= 0 || height <= 0) return ''
+
+  const effectiveRadius = Math.min(adjustedWidth / 2, height / 2)
+
+  if (height <= adjustedWidth) {
+    // 短い場合は完全な楕円形
+    const centerX = adjustedX + adjustedWidth / 2
+    const centerY = y + height / 2
+    return `M ${centerX - effectiveRadius} ${centerY} A ${effectiveRadius} ${height/2} 0 1 1 ${centerX + effectiveRadius} ${centerY} A ${effectiveRadius} ${height/2} 0 1 1 ${centerX - effectiveRadius} ${centerY} Z`
+  } else {
+    // 長い場合はカプセル形状（上下が半円、中央が四角形）
+    const left = adjustedX
+    const right = adjustedX + adjustedWidth
+    const top = y + effectiveRadius
+    const bottom = y + height - effectiveRadius
+
+    return `M ${left} ${top} A ${effectiveRadius} ${effectiveRadius} 0 0 1 ${right} ${top} L ${right} ${bottom} A ${effectiveRadius} ${effectiveRadius} 0 0 1 ${left} ${bottom} L ${left} ${top} Z`
+  }
 }

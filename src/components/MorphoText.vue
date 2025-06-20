@@ -1,54 +1,180 @@
 <template>
-  <div class="morpho-text-container">
-    <!-- Main Canvas Area -->
-    <div class="canvas-area">
-      <svg
-        ref="svgCanvasRef"
-        :viewBox="`0 0 ${config.svgWidth} ${config.svgHeight}`"
-        preserveAspectRatio="xMidYMid meet"
-        class="morph-canvas"
-      >
-        <g
-          v-for="(slice, sliceIndex) in currentSliceMap"
-          :key="`slice-${sliceIndex}`"
-          class="slice-group"
-          :data-slice="sliceIndex"
-        >
-          <path
-            v-for="(segment, segmentIndex) in slice"
-            :key="`segment-${sliceIndex}-${segmentIndex}`"
-            :d="createCapsulePath(sliceIndex, segment)"
-            class="slice-segment"
-            :data-segment="segmentIndex"
+  <div class="morpho-text-app">
+    <!-- Left Panel: Controls -->
+    <div class="left-panel">
+      <div class="controls-section">
+        <h2>Morpho Text Exporter</h2>
+        
+        <!-- Text Input -->
+        <div class="input-group">
+          <label>開始テキスト (空 = デフォルト状態)</label>
+          <input
+            v-model="startText"
+            placeholder="開始テキスト (空欄可)"
+            class="text-input"
+            @keydown.enter="updateStartText"
           />
-        </g>
-      </svg>
+        </div>
+
+        <div class="input-group">
+          <label>終了テキスト</label>
+          <input
+            v-model="endText"
+            placeholder="終了テキスト"
+            class="text-input"
+            @keydown.enter="updateEndText"
+          />
+        </div>
+
+        <!-- Slice Count -->
+        <div class="input-group">
+          <label>分割数: {{ config.sliceCount }}</label>
+          <input
+            v-model.number="config.sliceCount"
+            type="range"
+            min="5"
+            max="50"
+            class="slider"
+            @input="handleSliceCountChange"
+          />
+        </div>
+
+        <!-- Frame Count -->
+        <div class="input-group">
+          <label>フレーム数: {{ frameCount }}</label>
+          <input
+            v-model.number="frameCount"
+            type="range"
+            min="2"
+            max="50"
+            class="slider"
+          />
+        </div>
+
+        <!-- Generate Button -->
+        <button 
+          @click="generateFrames" 
+          :disabled="isGenerating || !endText" 
+          class="generate-btn"
+        >
+          {{ isGenerating ? '生成中...' : 'フレーム生成' }}
+        </button>
+
+        <!-- Progress -->
+        <div v-if="isGenerating" class="progress-section">
+          <div class="progress-bar">
+            <div class="progress-fill" :style="{ width: generationProgress + '%' }"></div>
+          </div>
+          <p class="progress-text">{{ generationStatus }}</p>
+        </div>
+
+        <!-- Export Controls -->
+        <div v-if="frames.length > 0" class="export-section">
+          <h3>エクスポート ({{ frames.length }}フレーム)</h3>
+          <div class="export-buttons">
+            <button @click="downloadAllFrames" class="export-btn">
+              📦 ZIP一括ダウンロード
+            </button>
+            <button @click="playAnimation" class="export-btn">
+              ▶️ アニメーション再生
+            </button>
+          </div>
+        </div>
+
+        <!-- Keyboard Shortcuts -->
+        <div class="shortcuts-info">
+          <h4>ショートカット</h4>
+          <div class="shortcuts-list">
+            <span>← →</span><span>フレーム移動</span>
+            <span>Space</span><span>アニメーション</span>
+            <span>Ctrl+G</span><span>生成</span>
+            <span>Ctrl+D</span><span>ダウンロード</span>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <!-- Bottom Controls -->
-    <div class="bottom-controls">
-      <div class="unified-input-container">
-        <div 
-          class="unified-input"
-          :class="{ 'slider-mode': isSliderMode }"
-          @mousedown="handleMouseDown"
-          @touchstart="handleTouchStart"
-        >
-          <!-- Text Input Mode -->
-          <input
-            v-if="!isSliderMode"
-            ref="textInputRef"
-            v-model="inputText"
-            placeholder="Enter text and press Enter"
-            :disabled="isAnimating"
-            @keydown.enter="handleTextSubmit"
-            class="text-input-field"
-          />
-          
-          <!-- Slider Mode -->
-          <div v-if="isSliderMode" class="slider-mode-content">
-            <div class="slider-bar"></div>
-            <div class="slider-value">{{ config.sliceCount }}</div>
+    <!-- Right Panel: Preview -->
+    <div class="right-panel">
+      <!-- Current SVG Preview -->
+      <div class="preview-section">
+        <h3>現在の状態</h3>
+        <div class="svg-container">
+          <svg
+            :viewBox="`0 0 ${config.svgWidth} ${config.svgHeight}`"
+            class="preview-svg"
+          >
+            <g v-for="(slice, sliceIndex) in currentSliceMap" :key="`slice-${sliceIndex}`">
+              <path
+                v-for="(segment, segmentIndex) in slice"
+                :key="`segment-${sliceIndex}-${segmentIndex}`"
+                :d="createCapsulePath(sliceIndex, segment)"
+                class="segment-path"
+              />
+            </g>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Frame Preview -->
+      <div v-if="frames.length > 0" class="frames-section">
+        <div class="frames-header">
+          <h3>フレームプレビュー</h3>
+          <div class="frame-nav">
+            <button @click="previousFrame" :disabled="currentFrameIndex === 0">◀</button>
+            <span>{{ currentFrameIndex + 1 }} / {{ frames.length }}</span>
+            <button @click="nextFrame" :disabled="currentFrameIndex === frames.length - 1">▶</button>
+          </div>
+        </div>
+
+        <!-- Large Frame Preview -->
+        <div class="frame-preview">
+          <div class="svg-container">
+            <svg
+              :viewBox="`0 0 ${config.svgWidth} ${config.svgHeight}`"
+              class="preview-svg"
+            >
+              <g v-for="(slice, sliceIndex) in currentFrame?.sliceMap || []" :key="`frame-slice-${sliceIndex}`">
+                <path
+                  v-for="(segment, segmentIndex) in slice"
+                  :key="`frame-segment-${sliceIndex}-${segmentIndex}`"
+                  :d="createCapsulePath(sliceIndex, segment)"
+                  class="segment-path"
+                />
+              </g>
+            </svg>
+          </div>
+          <div class="frame-info">
+            <span>Progress: {{ ((currentFrame?.progress || 0) * 100).toFixed(1) }}%</span>
+            <button @click="downloadCurrentFrame" class="download-frame-btn">
+              💾 このフレームをダウンロード
+            </button>
+          </div>
+        </div>
+
+        <!-- Thumbnail Grid -->
+        <div class="thumbnails-grid">
+          <div
+            v-for="(frame, index) in frames"
+            :key="index"
+            class="thumbnail"
+            :class="{ active: currentFrameIndex === index }"
+            @click="currentFrameIndex = index"
+          >
+            <svg
+              :viewBox="`0 0 ${config.svgWidth} ${config.svgHeight}`"
+              class="thumbnail-svg"
+            >
+              <g v-for="(slice, sliceIndex) in frame.sliceMap" :key="`thumb-slice-${sliceIndex}`">
+                <path
+                  v-for="(segment, segmentIndex) in slice"
+                  :key="`thumb-segment-${sliceIndex}-${segmentIndex}`"
+                  :d="createCapsulePath(sliceIndex, segment)"
+                  class="segment-path"
+                />
+              </g>
+            </svg>
+            <span class="thumbnail-index">{{ index + 1 }}</span>
           </div>
         </div>
       </div>
@@ -57,28 +183,30 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
-import { createDefaultSliceMap, textToSliceMap, testSegmentMatching, matchSegments, validateMorphingSegments } from '../utils/sliceProcessor'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import JSZip from 'jszip'
+import { createDefaultSliceMap, textToSliceMap, matchSegments, interpolateFromMorphPairs } from '../utils/sliceProcessor'
 import type { SliceMap, SliceSegment } from '../types/slice'
 
-console.log('MorphoText-simple.vue: スクリプト実行開始')
+// FrameData型定義
+interface FrameData {
+  progress: number
+  sliceMap: SliceMap
+  svgData: string
+}
 
 // リアクティブな状態
-const svgCanvasRef = ref<SVGElement>()
-const textInputRef = ref<HTMLInputElement>()
-const inputText = ref('')
+const startText = ref('')
+const endText = ref('')
+const frameCount = ref(10)
 const currentSliceMap = ref<SliceMap>([])
-const targetSliceMap = ref<SliceMap>([])
-const isAnimating = ref(false)
-const lastSubmittedText = ref('') // 最後に送信されたテキストを保持
-
-// 統合入力コントロール用の状態
-const isSliderMode = ref(false)
-const isDragging = ref(false)
-const dragStartX = ref(0)
-const dragStartValue = ref(0)
-const holdTimer = ref<number | null>(null)
-const isProcessingSliceChange = ref(false) // 処理中フラグ
+const startSliceMap = ref<SliceMap>([])
+const endSliceMap = ref<SliceMap>([])
+const frames = ref<FrameData[]>([])
+const currentFrameIndex = ref(0)
+const isGenerating = ref(false)
+const generationProgress = ref(0)
+const generationStatus = ref('')
 
 // 設定
 const config = reactive({
@@ -87,37 +215,144 @@ const config = reactive({
   svgHeight: 300
 })
 
-console.log('MorphoText-simple.vue: 変数定義完了')
+// 計算されたプロパティ
+const currentFrame = computed(() => frames.value[currentFrameIndex.value])
 
 // コンポーネントマウント時の初期化
 onMounted(() => {
-  console.log('MorphoText-simple.vue: onMounted実行')
   initializeDefaultState()
-  
-  // セグメントマッチングのテストを実行
-  console.log('セグメントマッチングテストを実行中...')
-  testSegmentMatching()
-  
-  // デバッグ用のグローバル関数を設定
-  ;(window as any).runSegmentTest = testSegmentMatching
-  ;(window as any).runVisualTest = runVisualTest
-  console.log('🔧 デバッグ用コマンド:')
-  console.log('- window.runSegmentTest() でセグメントテストを再実行')
-  console.log('- window.runVisualTest() でビジュアルテストを実行（小さな円の動作確認）')
-  console.log('')
-  console.log('📋 新機能: セグメントが存在しない場所では中央に小さな円(高さ0.03)が表示されます')
-  console.log('💡 テストのヒント: 空の文字列を入力すると全てのセグメントが小さな円に収束します')
+  document.addEventListener('keydown', handleKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleKeydown)
 })
 
 // デフォルト状態の初期化
 function initializeDefaultState() {
-  console.log('デフォルト状態初期化開始')
-  try {
-    currentSliceMap.value = createDefaultSliceMap(config.sliceCount)
-    console.log('デフォルト状態初期化完了', currentSliceMap.value)
-  } catch (error) {
-    console.error('デフォルト状態初期化エラー', error)
+  const defaultMap = createDefaultSliceMap(config.sliceCount)
+  currentSliceMap.value = defaultMap
+  startSliceMap.value = JSON.parse(JSON.stringify(defaultMap))
+}
+
+// テキスト更新処理
+async function updateStartText() {
+  if (startText.value.trim()) {
+    startSliceMap.value = await textToSliceMap(startText.value.trim(), config.sliceCount)
+  } else {
+    startSliceMap.value = createDefaultSliceMap(config.sliceCount)
   }
+  updateCurrentDisplay()
+}
+
+async function updateEndText() {
+  if (endText.value.trim()) {
+    endSliceMap.value = await textToSliceMap(endText.value.trim(), config.sliceCount)
+    updateCurrentDisplay()
+  }
+}
+
+function updateCurrentDisplay() {
+  if (frames.value.length > 0 && currentFrame.value) {
+    currentSliceMap.value = currentFrame.value.sliceMap
+  } else if (endSliceMap.value.length > 0) {
+    currentSliceMap.value = endSliceMap.value
+  } else {
+    currentSliceMap.value = startSliceMap.value
+  }
+}
+
+// スライス数変更の処理
+async function handleSliceCountChange() {
+  initializeDefaultState()
+  if (startText.value.trim()) {
+    await updateStartText()
+  }
+  if (endText.value.trim()) {
+    await updateEndText()
+  }
+  frames.value = [] // フレームをリセット
+}
+
+// フレーム生成
+async function generateFrames() {
+  if (frameCount.value < 2 || !endText.value.trim()) return
+  
+  isGenerating.value = true
+  frames.value = []
+  generationProgress.value = 0
+  generationStatus.value = 'セグメントマッチングを実行中...'
+  
+  try {
+    // 開始と終了のスライスマップを確保
+    const startMap = startText.value.trim() 
+      ? await textToSliceMap(startText.value.trim(), config.sliceCount)
+      : createDefaultSliceMap(config.sliceCount)
+    
+    const endMap = await textToSliceMap(endText.value.trim(), config.sliceCount)
+    
+    // マッチングペアを生成
+    const morphPairs = matchSegments(startMap, endMap, config.sliceCount)
+    generationProgress.value = 10
+    generationStatus.value = 'フレーム生成中...'
+    
+    // 各フレームを生成
+    for (let i = 0; i < frameCount.value; i++) {
+      const progress = i / (frameCount.value - 1)
+      const easeProgress = 1 - Math.pow(1 - progress, 3)
+      
+      const interpolatedSliceMap = interpolateFromMorphPairs(morphPairs, easeProgress)
+      const svgData = generateSVGData(interpolatedSliceMap)
+      
+      frames.value.push({
+        progress: easeProgress,
+        sliceMap: interpolatedSliceMap,
+        svgData
+      })
+      
+      const frameProgress = 10 + ((i + 1) / frameCount.value) * 90
+      generationProgress.value = frameProgress
+      generationStatus.value = `フレーム ${i + 1}/${frameCount.value} を生成中...`
+      
+      if (i % 5 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 1))
+      }
+    }
+    
+    currentFrameIndex.value = 0
+    updateCurrentDisplay()
+    generationStatus.value = `完了！${frameCount.value}フレームが生成されました。`
+  } catch (error) {
+    console.error('フレーム生成エラー:', error)
+    generationStatus.value = 'エラーが発生しました。'
+  } finally {
+    setTimeout(() => {
+      isGenerating.value = false
+      generationProgress.value = 0
+      generationStatus.value = ''
+    }, 2000)
+  }
+}
+
+// SVGデータ生成
+function generateSVGData(sliceMap: SliceMap): string {
+  const paths = []
+  
+  for (let sliceIndex = 0; sliceIndex < sliceMap.length; sliceIndex++) {
+    const slice = sliceMap[sliceIndex]
+    for (let segmentIndex = 0; segmentIndex < slice.length; segmentIndex++) {
+      const segment = slice[segmentIndex]
+      const pathData = createCapsulePath(sliceIndex, segment)
+      if (pathData) {
+        paths.push(`<path d="${pathData}" fill="black" />`)
+      }
+    }
+  }
+  
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg width="${config.svgWidth}" height="${config.svgHeight}" viewBox="0 0 ${config.svgWidth} ${config.svgHeight}" xmlns="http://www.w3.org/2000/svg">
+  ${paths.join('\n  ')}
+</svg>`
 }
 
 // カプセル形状のSVGパスを生成
@@ -147,6 +382,121 @@ function createCapsulePath(sliceIndex: number, segment: SliceSegment): string {
     return `M ${left} ${top} A ${effectiveRadius} ${effectiveRadius} 0 0 1 ${right} ${top} L ${right} ${bottom} A ${effectiveRadius} ${effectiveRadius} 0 0 1 ${left} ${bottom} L ${left} ${top} Z`
   }
 }
+
+// フレーム操作
+function nextFrame() {
+  if (currentFrameIndex.value < frames.value.length - 1) {
+    currentFrameIndex.value++
+    updateCurrentDisplay()
+  }
+}
+
+function previousFrame() {
+  if (currentFrameIndex.value > 0) {
+    currentFrameIndex.value--
+    updateCurrentDisplay()
+  }
+}
+
+// アニメーション再生
+function playAnimation() {
+  if (frames.value.length === 0) return
+  
+  let frameIndex = 0
+  const interval = setInterval(() => {
+    currentFrameIndex.value = frameIndex
+    updateCurrentDisplay()
+    frameIndex++
+    
+    if (frameIndex >= frames.value.length) {
+      clearInterval(interval)
+    }
+  }, 100)
+}
+
+// ダウンロード機能
+function downloadCurrentFrame() {
+  if (currentFrame.value) {
+    const blob = new Blob([currentFrame.value.svgData], { type: 'image/svg+xml' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `frame-${currentFrameIndex.value + 1}.svg`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+}
+
+// 全フレームダウンロード
+async function downloadAllFrames() {
+  if (frames.value.length === 0) return
+  
+  try {
+    const zip = new JSZip()
+    
+    for (let i = 0; i < frames.value.length; i++) {
+      const frame = frames.value[i]
+      const fileName = `frame-${String(i + 1).padStart(3, '0')}.svg`
+      zip.file(fileName, frame.svgData)
+    }
+    
+    const metadata = {
+      startText: startText.value,
+      endText: endText.value,
+      frameCount: frames.value.length,
+      svgWidth: config.svgWidth,
+      svgHeight: config.svgHeight,
+      sliceCount: config.sliceCount,
+      exportDate: new Date().toISOString(),
+    }
+    zip.file('metadata.json', JSON.stringify(metadata, null, 2))
+    
+    const blob = await zip.generateAsync({ type: 'blob' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    
+    const textName = endText.value.replace(/[^a-zA-Z0-9]/g, '_') || 'morpho_text'
+    link.download = `${textName}_frames.zip`
+    link.click()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    console.error('ZIP生成エラー:', error)
+  }
+}
+
+// キーボードショートカット
+function handleKeydown(event: KeyboardEvent) {
+  if (frames.value.length === 0) return
+  
+  switch (event.key) {
+    case 'ArrowLeft':
+      event.preventDefault()
+      previousFrame()
+      break
+    case 'ArrowRight':
+      event.preventDefault()
+      nextFrame()
+      break
+    case ' ':
+      event.preventDefault()
+      playAnimation()
+      break
+    case 'g':
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault()
+        generateFrames()
+      }
+      break
+    case 'd':
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault()
+        downloadAllFrames()
+      }
+      break
+  }
+}
+</script>
 
 // テキスト入力の処理
 async function handleTextSubmit() {
@@ -260,30 +610,6 @@ function animateToTarget(target: SliceMap): Promise<void> {
     
     requestAnimationFrame(animate)
   })
-}
-
-// マッチングペアに基づいてスライスマップを補間
-function interpolateFromMorphPairs(morphPairs: any[], progress: number): SliceMap {
-  const result: SliceMap = []
-  
-  for (const pair of morphPairs) {
-    const interpolatedSlice: SliceSegment[] = []
-    
-    // currentSegmentsとtargetSegmentsは同じ長さであることが保証されている
-    for (let i = 0; i < pair.currentSegments.length; i++) {
-      const currentSeg = pair.currentSegments[i]
-      const targetSeg = pair.targetSegments[i]
-      
-      interpolatedSlice.push({
-        top: currentSeg.top + (targetSeg.top - currentSeg.top) * progress,
-        bottom: currentSeg.bottom + (targetSeg.bottom - currentSeg.bottom) * progress
-      })
-    }
-    
-    result.push(interpolatedSlice)
-  }
-  
-  return result
 }
 
 // 2つのスライスマップを補間（後方互換性のため保持）
